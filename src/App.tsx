@@ -17,6 +17,7 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
 
   // Drafting State
   const [query, setQuery] = useState('');
@@ -45,12 +46,22 @@ export default function App() {
 
   const fetchSources = async () => {
     setIsLoadingSources(true);
+    setSourcesError(null);
     try {
       const res = await fetch('/api/sources');
       const data = await res.json();
-      setSources(data);
-    } catch (err) {
+      if (res.ok && Array.isArray(data)) {
+        setSources(data);
+      } else {
+        const errMsg = data.error || 'Failed to fetch sources';
+        console.error('Failed to fetch sources:', errMsg);
+        setSourcesError(errMsg);
+        setSources([]);
+      }
+    } catch (err: any) {
       console.error(err);
+      setSourcesError(err.message || 'An unexpected error occurred');
+      setSources([]);
     } finally {
       setIsLoadingSources(false);
     }
@@ -331,9 +342,15 @@ export default function App() {
                   <p className="text-neutral-400 font-medium">Your private dataset of research materials.</p>
                 </div>
                 <div className="text-xs font-bold text-neutral-900 bg-warm-bg px-3 py-1.5 rounded-full border border-warm-grey">
-                  {sources.length} SOURCES TOTAL
+                  {Array.isArray(sources) ? sources.length : 0} SOURCES TOTAL
                 </div>
               </div>
+
+              {sourcesError && (
+                <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm font-medium border border-red-100 italic">
+                  {sourcesError}
+                </div>
+              )}
 
               {isLoadingSources ? (
                 <div className="flex items-center justify-center py-20">
@@ -352,7 +369,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-4">
-                  {sources.map((s) => (
+                  {Array.isArray(sources) && sources.map((s) => (
                     <div key={s._id} className="group bg-warm-bg border border-warm-grey/60 p-6 rounded-2xl flex items-center justify-between gap-6 hover:border-neutral-300 transition-all hover:shadow-sm">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-1">
