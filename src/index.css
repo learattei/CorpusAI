@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+
+  --color-warm-bg: #FAFAF8;
+  --color-warm-grey: #E8E8E4;
+  --color-amber-tint: #FFF9F0;
+  --color-amber-border: #F59E0B;
+}
+
+body {
+  background-color: #FFFFFF;
+  color: #1A1A1A;
+}
+
+.markdown-body {
+  font-family: var(--font-sans);
+  line-height: 1.7;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 1rem;
+}
+
