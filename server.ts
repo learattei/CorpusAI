@@ -31,16 +31,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", mode: process.env.NODE_ENV });
-});
-
-// Error responder for all /api routes
-app.use("/api", (err: any, req: Request, res: any, next: any) => {
-  console.error("API Error:", err);
-  res.status(500).json({ error: err.message || "Internal Server Error" });
-});
-
 // Setup Multer for PDF uploads
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -111,208 +101,218 @@ async function processAndIngest(text: string, sourceName: string, db: any, opena
   return processedChunks.length;
 }
 
-app.post("/api/ingest", async (req, res) => {
-  try {
-    const { text, sourceName } = req.body;
-    if (!text || !sourceName) return res.status(400).json({ error: "Missing text or sourceName" });
+// startServer is defined below
 
-    const { db, openai } = await getServices();
-    if (!db || !openai) throw new Error("Services not configured");
+async function startServer() {
+  const { db, openai, anthropic } = await getServices();
 
-    const count = await processAndIngest(text, sourceName, db, openai);
-    res.json({ success: true, count });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+  // API health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", mode: process.env.NODE_ENV });
+  });
 
-// PDF Ingest
-app.post("/api/ingest-pdf", upload.single("file"), async (req: MulterRequest, res) => {
-  try {
-    const { sourceName } = req.body;
-    if (!req.file || !sourceName) return res.status(400).json({ error: "Missing file or sourceName" });
+  // Ingest text source
+  app.post("/api/ingest", async (req, res) => {
+    try {
+      const { text, sourceName } = req.body;
+      if (!text || !sourceName) return res.status(400).json({ error: "Missing text or sourceName" });
 
-    const { db, openai } = await getServices();
-    if (!db || !openai) throw new Error("Services not configured");
+      const { db, openai } = await getServices();
+      if (!db || !openai) throw new Error("Services not configured");
 
-    // pdf-parse can sometimes be exported differently in ESM
-    const pdfParser = (pdf as any).default || pdf;
-    const pdfData = await pdfParser(req.file.buffer);
-    const count = await processAndIngest(pdfData.text, sourceName, db, openai);
-    
-    res.json({ success: true, count });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+      const count = await processAndIngest(text, sourceName, db, openai);
+      res.json({ success: true, count });
+    } catch (error: any) {
+      console.error("Ingest Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
 
-// List Sources (Knowledge Base)
-app.get("/api/sources", async (req, res) => {
-  try {
-    const { db } = await getServices();
-    if (!db) throw new Error("Database not connected");
+  // PDF Ingest
+  app.post("/api/ingest-pdf", upload.single("file"), async (req: MulterRequest, res) => {
+    try {
+      const { sourceName } = req.body;
+      if (!req.file || !sourceName) return res.status(400).json({ error: "Missing file or sourceName" });
 
-    // Group by sourceName/sourceId to list distinct documents
-    const sources = await db.collection("chunks").aggregate([
-      {
-        $group: {
-          _id: "$sourceId",
-          name: { $first: "$source" },
-          sample: { $first: "$content" },
-          chunkCount: { $sum: 1 },
-          createdAt: { $max: "$createdAt" }
-        }
-      },
-      { $sort: { createdAt: -1 } }
-    ]).toArray();
+      const { db, openai } = await getServices();
+      if (!db || !openai) throw new Error("Services not configured");
 
-    res.json(sources);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete Source
-app.delete("/api/sources/:id", async (req, res) => {
-  try {
-    const { db } = await getServices();
-    if (!db) throw new Error("Database not connected");
-    
-    const result = await db.collection("chunks").deleteMany({ sourceId: new ObjectId(req.params.id) });
-    res.json({ success: true, deletedCount: result.deletedCount });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Update Source
-app.patch("/api/sources/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log(`PATCH /api/sources/${id}`);
-    const { text, sourceName } = req.body;
-    const { db, openai } = await getServices();
-    if (!db || !openai) throw new Error("Services not configured");
-
-    // Re-ingesting is cleaner than manually patching chunks if text changed significantly
-    // Delete old
-    await db.collection("chunks").deleteMany({ sourceId: new ObjectId(req.params.id) });
-    // Ingest new (giving it a new ID but user sees it as "editing" the same conceptual doc)
-    const count = await processAndIngest(text, sourceName, db, openai);
-
-    res.json({ success: true, count });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Research and Synthesis (Stream)
-app.get("/api/research", async (req, res) => {
-  const query = req.query.q as string;
-  if (!query) return res.status(400).write("data: " + JSON.stringify({ error: "Missing query" }) + "\n\n");
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  const sendStatus = (status: string) => {
-    res.write(`data: ${JSON.stringify({ status })}\n\n`);
-  };
-
-  try {
-    const { db, openai, anthropic } = await getServices();
-    if (!db || !openai || !anthropic) throw new Error("Services not configured");
-
-    let currentQuery = query;
-    let iterations = 0;
-    let finalResults: any[] = [];
-    let sufficient = false;
-
-    while (!sufficient && iterations < 3) {
-      iterations++;
-      sendStatus("Searching corpus...");
+      const pdfParser = (pdf as any).default || pdf;
+      const pdfData = await pdfParser(req.file.buffer);
+      const count = await processAndIngest(pdfData.text, sourceName, db, openai);
       
-      const embeddingResponse = await openai.embeddings.create({
-        model: "text-embedding-ada-002",
-        input: currentQuery,
-      });
-      const embedding = embeddingResponse.data[0].embedding;
+      res.json({ success: true, count });
+    } catch (error: any) {
+      console.error("PDF Ingest Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
 
-      // MongoDB Vector Search
-      const results = await db.collection("chunks").aggregate([
+  // List Sources
+  app.get("/api/sources", async (req, res) => {
+    try {
+      const { db } = await getServices();
+      if (!db) throw new Error("Database not connected");
+
+      const sources = await db.collection("chunks").aggregate([
         {
-          "$vectorSearch": {
-            "index": "embedding",
-            "path": "embedding",
-            "queryVector": embedding,
-            "numCandidates": 100,
-            "limit": 5
+          $group: {
+            _id: "$sourceId",
+            name: { $first: "$source" },
+            sample: { $first: "$content" },
+            chunkCount: { $sum: 1 },
+            createdAt: { $max: "$createdAt" }
           }
-        }
+        },
+        { $sort: { createdAt: -1 } }
       ]).toArray();
 
-      finalResults = results;
+      res.json(sources);
+    } catch (error: any) {
+      console.error("List Sources Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete Source
+  app.delete("/api/sources/:id", async (req, res) => {
+    try {
+      const { db } = await getServices();
+      if (!db) throw new Error("Database not connected");
       
-      sendStatus("Evaluating results...");
-      const evaluation = await anthropic.messages.create({
+      const result = await db.collection("chunks").deleteMany({ sourceId: new ObjectId(req.params.id) });
+      res.json({ success: true, deletedCount: result.deletedCount });
+    } catch (error: any) {
+      console.error("Delete Source Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update Source (Changed to POST for better compatibility)
+  app.post("/api/sources/:id/update", async (req, res) => {
+    try {
+      const { id } = req.params;
+      console.log(`Updating source: ${id}`);
+      const { text, sourceName } = req.body;
+      const { db, openai } = await getServices();
+      if (!db || !openai) throw new Error("Services not configured");
+
+      await db.collection("chunks").deleteMany({ sourceId: new ObjectId(id) });
+      const count = await processAndIngest(text, sourceName, db, openai);
+
+      res.json({ success: true, count });
+    } catch (error: any) {
+      console.error("Update Source Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Research and Synthesis (Stream)
+  app.get("/api/research", async (req, res) => {
+    const query = req.query.q as string;
+    if (!query) return res.status(400).write("data: " + JSON.stringify({ error: "Missing query" }) + "\n\n");
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const sendStatus = (status: string) => {
+      res.write(`data: ${JSON.stringify({ status })}\n\n`);
+    };
+
+    try {
+      const { db, openai, anthropic } = await getServices();
+      if (!db || !openai || !anthropic) throw new Error("Services not configured");
+
+      let currentQuery = query;
+      let iterations = 0;
+      let finalResults: any[] = [];
+      let sufficient = false;
+
+      while (!sufficient && iterations < 3) {
+        iterations++;
+        sendStatus("Searching corpus...");
+        
+        const embeddingResponse = await openai.embeddings.create({
+          model: "text-embedding-ada-002",
+          input: currentQuery,
+        });
+        const embedding = embeddingResponse.data[0].embedding;
+
+        // MongoDB Vector Search
+        const results = await db.collection("chunks").aggregate([
+          {
+            "$vectorSearch": {
+              "index": "embedding",
+              "path": "embedding",
+              "queryVector": embedding,
+              "numCandidates": 100,
+              "limit": 5
+            }
+          }
+        ]).toArray();
+
+        finalResults = results;
+        
+        sendStatus("Evaluating results...");
+        const evaluation = await anthropic.messages.create({
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 1000,
+          system: "Evaluate if the provided text chunks are sufficient to answer the user query. Reply in JSON: { sufficient: boolean, reformulatedQuery: string | null }",
+          messages: [{ 
+            role: "user", 
+            content: `Query: ${query}\n\nChunks:\n${results.map(r => r.content).join("\n---\n")}` 
+          }],
+        });
+
+        const evalData = JSON.parse((evaluation.content[0] as any).text);
+        sufficient = evalData.sufficient;
+        if (!sufficient && evalData.reformulatedQuery) {
+          sendStatus("Reformulated query...");
+          currentQuery = evalData.reformulatedQuery;
+        }
+      }
+
+      sendStatus("Identifying contradictions...");
+      const conflictsResponse = await anthropic.messages.create({
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1000,
-        system: "Evaluate if the provided text chunks are sufficient to answer the user query. Reply in JSON: { sufficient: boolean, reformulatedQuery: string | null }",
+        system: "Identify any direct contradictions between the provided text segments. If none, return empty list. Reply in JSON: { conflicts: string[] }",
         messages: [{ 
           role: "user", 
-          content: `Query: ${query}\n\nChunks:\n${results.map(r => r.content).join("\n---\n")}` 
+          content: `Chunks:\n${finalResults.map(r => r.content).join("\n---\n")}` 
+        }],
+      });
+      const conflicts = JSON.parse((conflictsResponse.content[0] as any).text).conflicts;
+
+      sendStatus("Drafting...");
+      const draftResponse = await anthropic.messages.create({
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 2000,
+        system: "Synthesis a grounded, professional draft based only on the provided chunks. Use markdown.",
+        messages: [{ 
+          role: "user", 
+          content: `User Request: ${query}\n\nEvidence:\n${finalResults.map(r => r.content).join("\n---\n")}` 
         }],
       });
 
-      const evalData = JSON.parse((evaluation.content[0] as any).text);
-      sufficient = evalData.sufficient;
-      if (!sufficient && evalData.reformulatedQuery) {
-        sendStatus("Reformulating query...");
-        currentQuery = evalData.reformulatedQuery;
-      }
+      const draft = (draftResponse.content[0] as any).text;
+
+      res.write(`data: ${JSON.stringify({ 
+        done: true, 
+        draft, 
+        conflicts,
+        sources: [...new Set(finalResults.map(r => r.source))] 
+      })}\n\n`);
+      res.end();
+
+    } catch (error: any) {
+      res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      res.end();
     }
+  });
 
-    sendStatus("Identifying contradictions...");
-    const conflictsResponse = await anthropic.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 1000,
-      system: "Identify any direct contradictions between the provided text segments. If none, return empty list. Reply in JSON: { conflicts: string[] }",
-      messages: [{ 
-        role: "user", 
-        content: `Chunks:\n${finalResults.map(r => r.content).join("\n---\n")}` 
-      }],
-    });
-    const conflicts = JSON.parse((conflictsResponse.content[0] as any).text).conflicts;
-
-    sendStatus("Drafting...");
-    const draftResponse = await anthropic.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 2000,
-      system: "Synthesis a grounded, professional draft based only on the provided chunks. Use markdown.",
-      messages: [{ 
-        role: "user", 
-        content: `User Request: ${query}\n\nEvidence:\n${finalResults.map(r => r.content).join("\n---\n")}` 
-      }],
-    });
-
-    const draft = (draftResponse.content[0] as any).text;
-
-    res.write(`data: ${JSON.stringify({ 
-      done: true, 
-      draft, 
-      conflicts,
-      sources: [...new Set(finalResults.map(r => r.source))] 
-    })}\n\n`);
-    res.end();
-
-  } catch (error: any) {
-    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
-    res.end();
-  }
-});
-
-async function startServer() {
-  // API 404 handler
+  // 404 for API
   app.all("/api/*", (req, res) => {
     res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.url}` });
   });

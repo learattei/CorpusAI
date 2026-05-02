@@ -141,12 +141,15 @@ export default function App() {
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingSource) return;
+    if (!editingSource || !editingSource._id) {
+      setIngestError("Invalid source selection for editing.");
+      return;
+    }
     setIsIngesting(true);
     setIngestError(null);
     try {
-      const res = await fetch(`/api/sources/${editingSource._id}`, {
-        method: 'PATCH',
+      const res = await fetch(`/api/sources/${editingSource._id}/update`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: sourceText, sourceName }),
       });
@@ -157,12 +160,18 @@ export default function App() {
         setShowAddModal(false);
         fetchSources();
       } else {
-        const errorData = await res.json();
-        setIngestError(errorData.error || 'Update failed');
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const errorData = await res.json();
+          setIngestError(errorData.error || 'Update failed');
+        } else {
+          const text = await res.text();
+          setIngestError(`Server Error (${res.status}): ${text.substring(0, 100)}...`);
+        }
       }
     } catch (err: any) {
       console.error(err);
-      setIngestError(err.message || 'An unexpected error occurred');
+      setIngestError(`Network or Unexpected Error: ${err.message}`);
     } finally {
       setIsIngesting(false);
     }
