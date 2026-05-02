@@ -31,7 +31,8 @@ export default function App() {
   const [sourceText, setSourceText] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
+  const [ingestMode, setIngestMode] = useState<'text' | 'pdf'>('text');
+  const [ingestError, setIngestError] = useState<string | null>(null);
 
   // Edit Source State
   const [editingSource, setEditingSource] = useState<Source | null>(null);
@@ -58,10 +59,14 @@ export default function App() {
   const handleIngest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sourceName) return;
+    if (ingestMode === 'text' && !sourceText) return;
+    if (ingestMode === 'pdf' && !selectedFile) return;
+
     setIsIngesting(true);
+    setIngestError(null);
     try {
       let res;
-      if (selectedFile) {
+      if (ingestMode === 'pdf' && selectedFile) {
         const formData = new FormData();
         formData.append('file', selectedFile);
         formData.append('sourceName', sourceName);
@@ -83,9 +88,13 @@ export default function App() {
         setSourceText('');
         setSelectedFile(null);
         if (activeTab === 'knowledge') fetchSources();
+      } else {
+        const errorData = await res.json();
+        setIngestError(errorData.error || 'Ingestion failed');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setIngestError(err.message || 'An unexpected error occurred');
     } finally {
       setIsIngesting(false);
     }
@@ -105,6 +114,7 @@ export default function App() {
     e.preventDefault();
     if (!editingSource) return;
     setIsIngesting(true);
+    setIngestError(null);
     try {
       const res = await fetch(`/api/sources/${editingSource._id}`, {
         method: 'PATCH',
@@ -115,34 +125,22 @@ export default function App() {
         setEditingSource(null);
         setSourceText('');
         setSourceName('');
+        setShowAddModal(false);
         fetchSources();
+      } else {
+        const errorData = await res.json();
+        setIngestError(errorData.error || 'Update failed');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setIngestError(err.message || 'An unexpected error occurred');
     } finally {
       setIsIngesting(false);
     }
   };
 
   const startRecording = () => {
-    const recognition = new (window as any).webkitSpeechRecognition() || new (window as any).SpeechRecognition();
-    if (!recognition) return alert('Speech recognition not supported');
-    
-    recognition.lang = 'en-US';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onstart = () => setIsRecording(true);
-    recognition.onend = () => setIsRecording(false);
-    recognition.onresult = (event: any) => {
-      let interimTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          setSourceText(prev => prev + ' ' + event.results[i][0].transcript);
-        }
-      }
-    };
-    recognition.start();
+    alert("Voice recording features are currently disabled.");
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -427,15 +425,15 @@ export default function App() {
                   <div className="flex gap-4 p-1 bg-warm-bg rounded-xl border border-warm-grey mb-4">
                     <button 
                       type="button" 
-                      onClick={() => setSelectedFile(null)}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${!selectedFile ? 'bg-white shadow-sm text-neutral-900' : 'text-neutral-400'}`}
+                      onClick={() => setIngestMode('text')}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${ingestMode === 'text' ? 'bg-white shadow-sm text-neutral-900' : 'text-neutral-400'}`}
                     >
-                      TEXT / VOICE
+                      TEXT / RESEARCH
                     </button>
                     <button 
                       type="button"
-                      onClick={() => setSourceText('')}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${selectedFile ? 'bg-white shadow-sm text-neutral-900' : 'text-neutral-400'}`}
+                      onClick={() => setIngestMode('pdf')}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${ingestMode === 'pdf' ? 'bg-white shadow-sm text-neutral-900' : 'text-neutral-400'}`}
                     >
                       PDF DOCUMENT
                     </button>
@@ -443,6 +441,11 @@ export default function App() {
                 )}
 
                 <div className="space-y-4">
+                  {ingestError && (
+                    <div className="bg-red-50 text-red-600 p-3 rounded-lg text-xs font-medium border border-red-100 italic">
+                      {ingestError}
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 ml-1">Source Identity</label>
                     <input
@@ -455,7 +458,7 @@ export default function App() {
                     />
                   </div>
 
-                  {!selectedFile ? (
+                  {ingestMode === 'text' || editingSource ? (
                     <div className="space-y-2 relative">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 ml-1">Content</label>
                       <textarea
@@ -466,13 +469,6 @@ export default function App() {
                         onChange={(e) => setSourceText(e.target.value)}
                         className="w-full bg-warm-bg border border-warm-grey px-4 py-3 rounded-xl focus:outline-none focus:ring-1 focus:ring-neutral-400 text-sm resize-none"
                       />
-                      <button
-                        type="button"
-                        onClick={startRecording}
-                        className={`absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-neutral-100 text-neutral-400'}`}
-                      >
-                        <Mic className="w-5 h-5" />
-                      </button>
                     </div>
                   ) : (
                     <div className="h-48 border-2 border-dashed border-warm-grey rounded-2xl flex flex-col items-center justify-center gap-4 bg-warm-bg group relative">
@@ -484,7 +480,7 @@ export default function App() {
                       />
                       <UploadCloud className="w-12 h-12 text-neutral-300 group-hover:text-neutral-400 transition-colors" />
                       <div className="text-center">
-                        <p className="text-sm font-serif italic text-neutral-500">
+                        <p className="text-sm font-serif italic text-neutral-500 px-4 line-clamp-1">
                           {selectedFile ? selectedFile.name : 'Select research PDF'}
                         </p>
                         <p className="text-[10px] text-neutral-400 font-bold uppercase mt-1">Automatic Text Extraction</p>
@@ -496,7 +492,11 @@ export default function App() {
                 <div className="flex gap-3 pt-4">
                   <button
                     type="button"
-                    onClick={() => setShowAddModal(false)}
+                    onClick={() => {
+                      setShowAddModal(false);
+                      setEditingSource(null);
+                      setIngestError(null);
+                    }}
                     className="flex-1 px-6 py-4 border border-warm-grey rounded-xl text-sm font-bold text-neutral-500 hover:bg-neutral-50 transition-colors"
                   >
                     Cancel
@@ -507,7 +507,7 @@ export default function App() {
                     className="flex-[2] bg-neutral-900 text-white py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-neutral-800 transition-all font-bold disabled:opacity-50"
                   >
                     {isIngesting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-4 h-4" />}
-                    {editingSource ? 'Save Changes' : (selectedFile ? 'Process & Ingest' : 'Add to Collection')}
+                    {editingSource ? 'Save Changes' : (ingestMode === 'pdf' ? 'Process & Ingest' : 'Add to Collection')}
                   </button>
                 </div>
               </form>
