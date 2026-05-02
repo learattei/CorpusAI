@@ -43,37 +43,14 @@ export default function App() {
     }
   }, [activeTab]);
 
-  useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const response = await fetch('/api/health');
-        if (!response.ok) {
-          const text = await response.text();
-          console.error('Health check failed:', text);
-        } else {
-          console.log('Backend health check passed');
-        }
-      } catch (err) {
-        console.error('Backend unreachable:', err);
-      }
-    };
-    checkHealth();
-  }, []);
-
   const fetchSources = async () => {
     setIsLoadingSources(true);
-    setIngestError(null);
     try {
       const res = await fetch('/api/sources');
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Failed to fetch sources (${res.status}): ${text.substring(0, 100)}`);
-      }
       const data = await res.json();
       setSources(data);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setIngestError(err.message);
     } finally {
       setIsLoadingSources(false);
     }
@@ -112,18 +89,12 @@ export default function App() {
         setSelectedFile(null);
         if (activeTab === 'knowledge') fetchSources();
       } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const errorData = await res.json();
-          setIngestError(errorData.error || 'Ingestion failed');
-        } else {
-          const text = await res.text();
-          setIngestError(`Server Error (${res.status}): ${text.substring(0, 100)}...`);
-        }
+        const errorData = await res.json();
+        setIngestError(errorData.error || 'Ingestion failed');
       }
     } catch (err: any) {
       console.error(err);
-      setIngestError(`Network or Unexpected Error: ${err.message}`);
+      setIngestError(err.message || 'An unexpected error occurred');
     } finally {
       setIsIngesting(false);
     }
@@ -141,15 +112,12 @@ export default function App() {
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingSource || !editingSource._id) {
-      setIngestError("Invalid source selection for editing.");
-      return;
-    }
+    if (!editingSource) return;
     setIsIngesting(true);
     setIngestError(null);
     try {
-      const res = await fetch(`/api/sources/${editingSource._id}/update`, {
-        method: 'POST',
+      const res = await fetch(`/api/sources/${editingSource._id}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: sourceText, sourceName }),
       });
@@ -160,18 +128,12 @@ export default function App() {
         setShowAddModal(false);
         fetchSources();
       } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const errorData = await res.json();
-          setIngestError(errorData.error || 'Update failed');
-        } else {
-          const text = await res.text();
-          setIngestError(`Server Error (${res.status}): ${text.substring(0, 100)}...`);
-        }
+        const errorData = await res.json();
+        setIngestError(errorData.error || 'Update failed');
       }
     } catch (err: any) {
       console.error(err);
-      setIngestError(`Network or Unexpected Error: ${err.message}`);
+      setIngestError(err.message || 'An unexpected error occurred');
     } finally {
       setIsIngesting(false);
     }
