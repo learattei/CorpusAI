@@ -22,10 +22,30 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Request logger
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", mode: process.env.NODE_ENV });
+});
+
+// Error responder for all /api routes
+app.use("/api", (err: any, req: Request, res: any, next: any) => {
+  console.error("API Error:", err);
+  res.status(500).json({ error: err.message || "Internal Server Error" });
+});
 
 // Setup Multer for PDF uploads
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+});
 
 // Lazy-initialized clients
 let mongoClient: MongoClient | null = null;
@@ -34,8 +54,10 @@ let anthropic: Anthropic | null = null;
 
 async function getServices() {
   if (!mongoClient && MONGODB_URI) {
+    console.log("Connecting to MongoDB...");
     mongoClient = new MongoClient(MONGODB_URI);
     await mongoClient.connect();
+    console.log("MongoDB connected.");
   }
   if (!openai && OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -52,6 +74,7 @@ async function getServices() {
 
 // Ingest text source
 async function processAndIngest(text: string, sourceName: string, db: any, openai: any) {
+  console.log(`Processing ingestion for: ${sourceName} (${text.length} chars)`);
   // Simple chunking logic (1000 chars roughly)
   const chunks = text.match(/[^.!?]+[.!?]+/g) || [text];
   const processedChunks = [];
@@ -113,7 +136,8 @@ app.post("/api/ingest-pdf", upload.single("file"), async (req: MulterRequest, re
     if (!db || !openai) throw new Error("Services not configured");
 
     // pdf-parse can sometimes be exported differently in ESM
-    const pdfData = await (pdf as any)(req.file.buffer);
+    const pdfParser = (pdf as any).default || pdf;
+    const pdfData = await pdfParser(req.file.buffer);
     const count = await processAndIngest(pdfData.text, sourceName, db, openai);
     
     res.json({ success: true, count });
@@ -164,6 +188,8 @@ app.delete("/api/sources/:id", async (req, res) => {
 // Update Source
 app.patch("/api/sources/:id", async (req, res) => {
   try {
+    const { id } = req.params;
+    console.log(`PATCH /api/sources/${id}`);
     const { text, sourceName } = req.body;
     const { db, openai } = await getServices();
     if (!db || !openai) throw new Error("Services not configured");
@@ -286,6 +312,11 @@ app.get("/api/research", async (req, res) => {
 });
 
 async function startServer() {
+  // API 404 handler
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.url}` });
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
