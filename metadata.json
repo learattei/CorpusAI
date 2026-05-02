@@ -1,6 +1,6 @@
 {
   "name": "CorpusAI",
-  "description": "A premium research-to-writing agent with semantic search, iterative retrieval, and conflict detection.",
+  "description": "A premium research-to-writing agent with Knowledge Base management, PDF support, and semantic synthesis.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

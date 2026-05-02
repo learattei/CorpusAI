@@ -1,10 +1,17 @@
-import express from "express";
+import express, { Request } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import cors from "cors";
+import multer from "multer";
+import * as pdf from "pdf-parse";
+
+// Define a type for the multer request
+interface MulterRequest extends Request {
+  file?: Express.Multer.File;
+}
 
 // Environment variables check
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -16,6 +23,9 @@ const PORT = 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// Setup Multer for PDF uploads
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Lazy-initialized clients
 let mongoClient: MongoClient | null = null;
@@ -41,6 +51,43 @@ async function getServices() {
 }
 
 // Ingest text source
+async function processAndIngest(text: string, sourceName: string, db: any, openai: any) {
+  // Simple chunking logic (1000 chars roughly)
+  const chunks = text.match(/[^.!?]+[.!?]+/g) || [text];
+  const processedChunks = [];
+  let currentChunk = "";
+  
+  for (const sentence of chunks) {
+    if ((currentChunk + sentence).length > 800) {
+      processedChunks.push(currentChunk.trim());
+      currentChunk = sentence;
+    } else {
+      currentChunk += sentence;
+    }
+  }
+  if (currentChunk) processedChunks.push(currentChunk.trim());
+
+  // Use a unique batch ID for this source ingestion to group chunks if needed
+  const sourceId = new ObjectId();
+
+  // Generate embeddings and store
+  for (const content of processedChunks) {
+    const response = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: content,
+    });
+
+    await db.collection("chunks").insertOne({
+      source: sourceName,
+      sourceId: sourceId,
+      content,
+      embedding: response.data[0].embedding,
+      createdAt: new Date(),
+    });
+  }
+  return processedChunks.length;
+}
+
 app.post("/api/ingest", async (req, res) => {
   try {
     const { text, sourceName } = req.body;
@@ -49,37 +96,85 @@ app.post("/api/ingest", async (req, res) => {
     const { db, openai } = await getServices();
     if (!db || !openai) throw new Error("Services not configured");
 
-    // Simple chunking logic (1000 chars roughly)
-    const chunks = text.match(/[^.!?]+[.!?]+/g) || [text];
-    const processedChunks = [];
-    let currentChunk = "";
+    const count = await processAndIngest(text, sourceName, db, openai);
+    res.json({ success: true, count });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PDF Ingest
+app.post("/api/ingest-pdf", upload.single("file"), async (req: MulterRequest, res) => {
+  try {
+    const { sourceName } = req.body;
+    if (!req.file || !sourceName) return res.status(400).json({ error: "Missing file or sourceName" });
+
+    const { db, openai } = await getServices();
+    if (!db || !openai) throw new Error("Services not configured");
+
+    // pdf-parse can sometimes be exported differently in ESM
+    const pdfData = await (pdf as any)(req.file.buffer);
+    const count = await processAndIngest(pdfData.text, sourceName, db, openai);
     
-    for (const sentence of chunks) {
-      if ((currentChunk + sentence).length > 800) {
-        processedChunks.push(currentChunk.trim());
-        currentChunk = sentence;
-      } else {
-        currentChunk += sentence;
-      }
-    }
-    if (currentChunk) processedChunks.push(currentChunk.trim());
+    res.json({ success: true, count });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    // Generate embeddings and store
-    for (const content of processedChunks) {
-      const response = await openai.embeddings.create({
-        model: "text-embedding-ada-002",
-        input: content,
-      });
+// List Sources (Knowledge Base)
+app.get("/api/sources", async (req, res) => {
+  try {
+    const { db } = await getServices();
+    if (!db) throw new Error("Database not connected");
 
-      await db.collection("chunks").insertOne({
-        source: sourceName,
-        content,
-        embedding: response.data[0].embedding,
-        createdAt: new Date(),
-      });
-    }
+    // Group by sourceName/sourceId to list distinct documents
+    const sources = await db.collection("chunks").aggregate([
+      {
+        $group: {
+          _id: "$sourceId",
+          name: { $first: "$source" },
+          sample: { $first: "$content" },
+          chunkCount: { $sum: 1 },
+          createdAt: { $max: "$createdAt" }
+        }
+      },
+      { $sort: { createdAt: -1 } }
+    ]).toArray();
 
-    res.json({ success: true, count: processedChunks.length });
+    res.json(sources);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete Source
+app.delete("/api/sources/:id", async (req, res) => {
+  try {
+    const { db } = await getServices();
+    if (!db) throw new Error("Database not connected");
+    
+    const result = await db.collection("chunks").deleteMany({ sourceId: new ObjectId(req.params.id) });
+    res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Source
+app.patch("/api/sources/:id", async (req, res) => {
+  try {
+    const { text, sourceName } = req.body;
+    const { db, openai } = await getServices();
+    if (!db || !openai) throw new Error("Services not configured");
+
+    // Re-ingesting is cleaner than manually patching chunks if text changed significantly
+    // Delete old
+    await db.collection("chunks").deleteMany({ sourceId: new ObjectId(req.params.id) });
+    // Ingest new (giving it a new ID but user sees it as "editing" the same conceptual doc)
+    const count = await processAndIngest(text, sourceName, db, openai);
+
+    res.json({ success: true, count });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
